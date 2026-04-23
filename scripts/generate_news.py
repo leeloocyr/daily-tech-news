@@ -166,32 +166,42 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
         lines = markdown.split("\n")
         markdown = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
 
-    # 카톡 요약
-    summary_prompt = f"""다음 뉴스에서 가장 중요한 3가지를 뽑아 카카오톡 메시지 형식(150자 이내)으로 요약하세요. 이모지 적당히 사용.
+    # 카톡 요약 (feed 템플릿용)
+    summary_prompt = f"""다음 기술 뉴스 마크다운에서 카카오톡 feed 메시지용 요약을 만드세요.
 
 {markdown}
 
-출력 예시:
-🤖 오늘의 AI 뉴스 ({DATE_STR})
+출력 형식(정확히 JSON으로만 출력, 코드블록 금지):
+{{
+  "title": "🤖 오늘의 AI/기술 뉴스 ({DATE_STR})",
+  "description": "카테고리별로 핵심 항목들을 한눈에 볼 수 있게 정리. 줄바꿈(\\n) 사용. 최대 800자. 각 카테고리 앞에 이모지(🧠, 🔒, 🛠️) 사용. 각 항목은 한 줄로 '• 제목 — 한줄설명' 형식."
+}}
 
-1. 제목 1
-2. 제목 2
-3. 제목 3
+예시 description:
+"🧠 AI/LLM\\n• GPT-5.4 출시 — 1M 컨텍스트, OSWorld 75%\\n• Claude Code Pro 제거 실험 철회 — 커뮤니티 반발\\n\\n🔒 보안\\n• CISA Cisco 긴급 패치 — 오늘(4/23) 기한\\n• Kyber 랜섬웨어 등장 — ESXi+Windows 공격\\n\\n🛠️ 개발 도구\\n• GitHub Copilot opt-out D-1 — 내일 마감!"
 
-자세히: 웹에서 확인
+중요:
+- 반드시 유효한 JSON 형식으로만 출력
+- title/description 외의 필드 금지
+- ITS/CCTV 관련 항목 있으면 ⭐ 추가
+- description 내부에서 한 줄로 \\n 이스케이프 사용"""
 
-중요: 출력은 메시지 텍스트만. 설명이나 코드블록 금지."""
-
-    summary = _gemini_call_with_fallback(
+    raw = _gemini_call_with_fallback(
         client, summary_prompt, "gemini-2.5-flash-lite", "gemini-2.5-flash"
     )
-    if summary.startswith("```"):
-        lines = summary.split("\n")
-        summary = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
-    if len(summary) > 190:
-        summary = summary[:187] + "..."
+    # 코드블록 제거
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        raw = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+    try:
+        parsed = json.loads(raw)
+        title = parsed.get("title", f"🤖 오늘의 AI 뉴스 ({DATE_STR})")
+        description = parsed.get("description", "")
+    except json.JSONDecodeError:
+        title = f"🤖 오늘의 AI 뉴스 ({DATE_STR})"
+        description = raw[:800]
 
-    return markdown, summary
+    return markdown, {"title": title, "description": description}
 
 
 def refresh_kakao_access_token() -> str:
@@ -222,16 +232,28 @@ def refresh_kakao_access_token() -> str:
     return access_token
 
 
-def send_kakao_message(text: str, access_token: str) -> None:
-    """카카오톡 나에게 보내기."""
+def send_kakao_message(summary: dict, access_token: str) -> None:
+    """카카오톡 나에게 보내기 (feed 템플릿으로 더 풍부한 정보 전송)."""
+    repo_url = "https://github.com/leeloocyr/daily-tech-news"
+    news_url = f"{repo_url}/blob/main/daily-tech-news/{DATE_STR}.md"
     template = {
-        "object_type": "text",
-        "text": text,
-        "link": {
-            "web_url": "https://github.com/leeloocyr/daily-tech-news",
-            "mobile_web_url": "https://github.com/leeloocyr/daily-tech-news",
+        "object_type": "feed",
+        "content": {
+            "title": summary["title"],
+            "description": summary["description"],
+            "image_url": "https://raw.githubusercontent.com/github/explore/main/topics/artificial-intelligence/artificial-intelligence.png",
+            "link": {"web_url": news_url, "mobile_web_url": news_url},
         },
-        "button_title": "GitHub에서 보기",
+        "buttons": [
+            {
+                "title": "전체 뉴스 읽기",
+                "link": {"web_url": news_url, "mobile_web_url": news_url},
+            },
+            {
+                "title": "GitHub 레포",
+                "link": {"web_url": repo_url, "mobile_web_url": repo_url},
+            },
+        ],
     }
     data = urllib.parse.urlencode({"template_object": json.dumps(template)}).encode()
     req = urllib.request.Request(
