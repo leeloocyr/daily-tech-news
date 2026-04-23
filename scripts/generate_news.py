@@ -166,42 +166,49 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
         lines = markdown.split("\n")
         markdown = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
 
-    # 카톡 요약 (feed 템플릿용)
-    summary_prompt = f"""다음 기술 뉴스 마크다운에서 카카오톡 feed 메시지용 요약을 만드세요.
+    # 카톡용 카테고리별 요약 (text 템플릿 여러 개로 분할 전송)
+    summary_prompt = f"""다음 기술 뉴스 마크다운에서 카카오톡 text 메시지 3개를 만드세요.
+각 메시지는 정확히 200자 이하. 각 카테고리별로 1개씩.
 
 {markdown}
 
-출력 형식(정확히 JSON으로만 출력, 코드블록 금지):
+출력 형식(정확히 JSON 배열로만 출력, 코드블록 금지):
 {{
-  "title": "🤖 오늘의 AI/기술 뉴스 ({DATE_STR})",
-  "description": "카테고리별로 핵심 항목들을 한눈에 볼 수 있게 정리. 줄바꿈(\\n) 사용. 최대 800자. 각 카테고리 앞에 이모지(🧠, 🔒, 🛠️) 사용. 각 항목은 한 줄로 '• 제목 — 한줄설명' 형식."
+  "headline": "🤖 오늘의 기술 뉴스 ({DATE_STR})\\n...",
+  "ai": "🧠 AI/LLM\\n\\n1. 제목 — 핵심내용\\n2. 제목 — 핵심내용\\n3. 제목 — 핵심내용",
+  "security": "🔒 보안\\n\\n1. ...\\n2. ...\\n3. ...",
+  "devtools": "🛠️ 개발도구\\n\\n1. ...\\n2. ..."
 }}
 
-예시 description:
-"🧠 AI/LLM\\n• GPT-5.4 출시 — 1M 컨텍스트, OSWorld 75%\\n• Claude Code Pro 제거 실험 철회 — 커뮤니티 반발\\n\\n🔒 보안\\n• CISA Cisco 긴급 패치 — 오늘(4/23) 기한\\n• Kyber 랜섬웨어 등장 — ESXi+Windows 공격\\n\\n🛠️ 개발 도구\\n• GitHub Copilot opt-out D-1 — 내일 마감!"
-
-중요:
-- 반드시 유효한 JSON 형식으로만 출력
-- title/description 외의 필드 금지
-- ITS/CCTV 관련 항목 있으면 ⭐ 추가
-- description 내부에서 한 줄로 \\n 이스케이프 사용"""
+규칙:
+- 각 필드 200자 이하 (카카오 text 제한)
+- headline은 오늘의 핵심 3줄 압축 (클릭 유도)
+- ai/security/devtools는 각 카테고리 상세
+- ITS/CCTV 관련 있으면 ⭐ 표시
+- 줄바꿈 반드시 \\n 이스케이프"""
 
     raw = _gemini_call_with_fallback(
         client, summary_prompt, "gemini-2.5-flash-lite", "gemini-2.5-flash"
     )
-    # 코드블록 제거
     if raw.startswith("```"):
         lines = raw.split("\n")
         raw = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
     try:
         parsed = json.loads(raw)
-        title = parsed.get("title", f"🤖 오늘의 AI 뉴스 ({DATE_STR})")
-        description = parsed.get("description", "")
     except json.JSONDecodeError:
-        title = f"🤖 오늘의 AI 뉴스 ({DATE_STR})"
-        description = raw[:800]
+        parsed = {"headline": f"🤖 오늘의 AI 뉴스 ({DATE_STR})\n\n요약 생성 실패. 상세 보기 링크 참조.", "ai": "", "security": "", "devtools": ""}
 
-    return markdown, {"title": title, "description": description}
+    # 각 메시지 200자 제한 엄격히 적용
+    messages = []
+    for key in ["headline", "ai", "security", "devtools"]:
+        text = parsed.get(key, "").strip()
+        if not text:
+            continue
+        if len(text) > 195:
+            text = text[:192] + "..."
+        messages.append(text)
+
+    return markdown, messages
 
 
 def refresh_kakao_access_token() -> str:
@@ -232,44 +239,41 @@ def refresh_kakao_access_token() -> str:
     return access_token
 
 
-def send_kakao_message(summary: dict, access_token: str) -> None:
-    """카카오톡 나에게 보내기 (feed 템플릿으로 더 풍부한 정보 전송)."""
+def send_kakao_message(messages: list, access_token: str) -> None:
+    """카카오톡 나에게 보내기 (카테고리별로 text 템플릿 여러 개 전송)."""
+    import time
+
     repo_url = "https://github.com/leeloocyr/daily-tech-news"
     news_url = f"{repo_url}/blob/main/daily-tech-news/{DATE_STR}.md"
-    template = {
-        "object_type": "feed",
-        "content": {
-            "title": summary["title"],
-            "description": summary["description"],
-            "image_url": "https://raw.githubusercontent.com/github/explore/main/topics/artificial-intelligence/artificial-intelligence.png",
+
+    for i, text in enumerate(messages):
+        is_last = i == len(messages) - 1
+        template = {
+            "object_type": "text",
+            "text": text,
             "link": {"web_url": news_url, "mobile_web_url": news_url},
-        },
-        "buttons": [
-            {
-                "title": "전체 뉴스 읽기",
-                "link": {"web_url": news_url, "mobile_web_url": news_url},
+        }
+        # 마지막 메시지에만 버튼
+        if is_last:
+            template["button_title"] = "전체 뉴스 읽기"
+
+        data = urllib.parse.urlencode({"template_object": json.dumps(template)}).encode()
+        req = urllib.request.Request(
+            "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/x-www-form-urlencoded",
             },
-            {
-                "title": "GitHub 레포",
-                "link": {"web_url": repo_url, "mobile_web_url": repo_url},
-            },
-        ],
-    }
-    data = urllib.parse.urlencode({"template_object": json.dumps(template)}).encode()
-    req = urllib.request.Request(
-        "https://kapi.kakao.com/v2/api/talk/memo/default/send",
-        data=data,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read())
-    if result.get("result_code") != 0:
-        sys.exit(f"[ERROR] 카카오 전송 실패: {result}")
-    print(f"[OK] 카카오 전송 성공")
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+        if result.get("result_code") != 0:
+            sys.exit(f"[ERROR] 카카오 전송 실패 ({i+1}/{len(messages)}): {result}")
+        print(f"[OK] 카카오 전송 성공 ({i+1}/{len(messages)})")
+        if not is_last:
+            time.sleep(1)  # 연속 전송 간 간격
 
 
 def main():
