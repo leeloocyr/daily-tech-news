@@ -30,3 +30,7 @@ news-reader/audio_cache/
 
 # Claude Code local
 .claude/
+
+# Leeloo internal
+.leeloo/
+*/.leeloo/
