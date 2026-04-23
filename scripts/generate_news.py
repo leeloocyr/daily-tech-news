@@ -167,25 +167,29 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
         markdown = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
 
     # 카톡용 카테고리별 요약 (text 템플릿 여러 개로 분할 전송)
-    summary_prompt = f"""다음 기술 뉴스 마크다운에서 카카오톡 text 메시지 3개를 만드세요.
-각 메시지는 정확히 200자 이하. 각 카테고리별로 1개씩.
+    summary_prompt = f"""다음 기술 뉴스 마크다운에서 카카오톡 text 메시지 4개를 만드세요.
 
 {markdown}
 
-출력 형식(정확히 JSON 배열로만 출력, 코드블록 금지):
+⚠️ 매우 중요: 각 필드는 **반드시 180자 이하** (한글/영어/공백/이모지 모두 1글자로 셈).
+길면 카카오에서 잘려서 "..." 표시됨. 짧고 압축적으로 쓰세요.
+
+출력 형식(순수 JSON만, 코드블록 금지):
 {{
-  "headline": "🤖 오늘의 기술 뉴스 ({DATE_STR})\\n...",
-  "ai": "🧠 AI/LLM\\n\\n1. 제목 — 핵심내용\\n2. 제목 — 핵심내용\\n3. 제목 — 핵심내용",
-  "security": "🔒 보안\\n\\n1. ...\\n2. ...\\n3. ...",
-  "devtools": "🛠️ 개발도구\\n\\n1. ...\\n2. ..."
+  "headline": "🤖 오늘의 기술뉴스 ({DATE_STR})\\n\\nAI: [핵심1줄]\\n보안: [핵심1줄]\\n도구: [핵심1줄]",
+  "ai": "🧠 AI/LLM\\n\\n1.[짧은제목]→[20자 요약]\\n2.[짧은제목]→[20자 요약]\\n3.[짧은제목]→[20자 요약]",
+  "security": "🔒 보안\\n\\n1...\\n2...\\n3...",
+  "devtools": "🛠️ 개발도구\\n\\n1...\\n2...\\n3..."
 }}
 
-규칙:
-- 각 필드 200자 이하 (카카오 text 제한)
-- headline은 오늘의 핵심 3줄 압축 (클릭 유도)
-- ai/security/devtools는 각 카테고리 상세
-- ITS/CCTV 관련 있으면 ⭐ 표시
-- 줄바꿈 반드시 \\n 이스케이프"""
+글자 수 관리 팁:
+- 각 항목 제목 10자 이내, 설명 25자 이내
+- 조사/접속사 과감히 생략 (예: "~가 출시됐다" → "출시")
+- 숫자/퍼센트/날짜는 짧게
+- ITS/CCTV 관련만 ⭐
+- 전체 필드 180자 이하 엄수
+
+검증: 각 필드 작성 후 글자 수 세서 180자 넘으면 줄이세요."""
 
     raw = _gemini_call_with_fallback(
         client, summary_prompt, "gemini-2.5-flash-lite", "gemini-2.5-flash"
@@ -198,14 +202,18 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
     except json.JSONDecodeError:
         parsed = {"headline": f"🤖 오늘의 AI 뉴스 ({DATE_STR})\n\n요약 생성 실패. 상세 보기 링크 참조.", "ai": "", "security": "", "devtools": ""}
 
-    # 각 메시지 200자 제한 엄격히 적용
+    # 각 메시지 검증 (Gemini가 초과하면 재시도 1회)
     messages = []
     for key in ["headline", "ai", "security", "devtools"]:
         text = parsed.get(key, "").strip()
         if not text:
             continue
+        # 초과 시 마지막 줄 단위로 잘라내기 (잘림 표시 방지)
         if len(text) > 195:
-            text = text[:192] + "..."
+            lines = text.split("\n")
+            while lines and len("\n".join(lines)) > 195:
+                lines.pop()
+            text = "\n".join(lines) if lines else text[:195]
         messages.append(text)
 
     return markdown, messages
