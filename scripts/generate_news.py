@@ -94,6 +94,23 @@ def collect_korean_news() -> str:
     return "\n\n".join(sections) if sections else "(네이버 뉴스 수집 실패)"
 
 
+def _gemini_call_with_fallback(client, prompt: str, primary: str, fallback: str) -> str:
+    """Gemini 호출. 503 등 실패 시 fallback 모델로 재시도."""
+    import time
+
+    last_err = None
+    for model in (primary, fallback):
+        for attempt in range(3):
+            try:
+                resp = client.models.generate_content(model=model, contents=prompt)
+                return resp.text.strip()
+            except Exception as e:
+                last_err = e
+                print(f"[WARN] {model} 시도 {attempt+1} 실패: {e}")
+                time.sleep(5 * (attempt + 1))
+    sys.exit(f"[ERROR] Gemini 전체 실패: {last_err}")
+
+
 def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
     """Gemini API로 전체 뉴스 마크다운 + 카톡 요약 생성."""
     client = genai.Client(api_key=env("GEMINI_API_KEY"))
@@ -141,11 +158,9 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
 
 중요: 마크다운 본문만 출력하고, 코드 블록 ```로 감싸지 마세요."""
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt_full,
+    markdown = _gemini_call_with_fallback(
+        client, prompt_full, "gemini-2.5-flash", "gemini-2.5-flash-lite"
     )
-    markdown = response.text.strip()
     # 코드 블록 감싸기 제거 (혹시 모델이 감싸면)
     if markdown.startswith("```"):
         lines = markdown.split("\n")
@@ -167,11 +182,9 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
 
 중요: 출력은 메시지 텍스트만. 설명이나 코드블록 금지."""
 
-    summary_resp = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=summary_prompt,
+    summary = _gemini_call_with_fallback(
+        client, summary_prompt, "gemini-2.5-flash-lite", "gemini-2.5-flash"
     )
-    summary = summary_resp.text.strip()
     if summary.startswith("```"):
         lines = summary.split("\n")
         summary = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
