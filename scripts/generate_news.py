@@ -171,25 +171,31 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
 
 {markdown}
 
-⚠️ 매우 중요: 각 필드는 **반드시 180자 이하** (한글/영어/공백/이모지 모두 1글자로 셈).
-길면 카카오에서 잘려서 "..." 표시됨. 짧고 압축적으로 쓰세요.
+각 필드는 **200자 이하** (한글/영어/공백/이모지 모두 1글자).
+카카오 한계 200자이므로 이를 **최대한 활용해서 의미 있는 정보**를 담으세요.
 
 출력 형식(순수 JSON만, 코드블록 금지):
 {{
-  "headline": "🤖 오늘의 기술뉴스 ({DATE_STR})\\n\\nAI: [핵심1줄]\\n보안: [핵심1줄]\\n도구: [핵심1줄]",
-  "ai": "🧠 AI/LLM\\n\\n1.[짧은제목]→[20자 요약]\\n2.[짧은제목]→[20자 요약]\\n3.[짧은제목]→[20자 요약]",
-  "security": "🔒 보안\\n\\n1...\\n2...\\n3...",
-  "devtools": "🛠️ 개발도구\\n\\n1...\\n2...\\n3..."
+  "headline": "🤖 오늘의 기술뉴스 ({DATE_STR})\\n\\n오늘의 핵심 3가지를 각 40-50자로 요약. AI/보안/도구 한 줄씩.",
+  "ai": "🧠 AI/LLM\\n\\n1. 제목 → 핵심 내용 50-60자 서술\\n2. 제목 → 핵심 내용 50-60자 서술\\n3. 제목 → 핵심 내용 40자",
+  "security": "🔒 보안\\n\\n1. 제목 → 내용 50-60자\\n2. 제목 → 내용 50-60자",
+  "devtools": "🛠️ 개발도구\\n\\n1. 제목 → 내용 50-60자\\n2. 제목 → 내용 50-60자"
 }}
 
-글자 수 관리 팁:
-- 각 항목 제목 10자 이내, 설명 25자 이내
-- 조사/접속사 과감히 생략 (예: "~가 출시됐다" → "출시")
-- 숫자/퍼센트/날짜는 짧게
-- ITS/CCTV 관련만 ⭐
-- 전체 필드 180자 이하 엄수
+작성 규칙:
+- 제목 15-25자 (의미 있게, 줄임말/약어 활용)
+- 설명 40-60자 (숫자/벤치마크/실질적 정보 포함)
+- 문장체보단 개조식 ("~이 출시됐다" → "87점 달성")
+- 핵심 숫자/날짜/지표는 반드시 포함 (예: "컨텍스트 1M", "CVE-2026-20133")
+- ITS/CCTV 관련만 ⭐ 표시
+- 전체 200자 이하 엄수 (초과 시 카톡 잘림)
 
-검증: 각 필드 작성 후 글자 수 세서 180자 넘으면 줄이세요."""
+좋은 예시:
+"1. GPT-5.5 출시 → SWE-Bench 87점, 1M 컨텍스트로 Claude Mythos 추격"
+"2. CISA Cisco 긴급패치 → SD-WAN 3개 CVE, 4/23 기한 자동공격 진행중"
+
+나쁜 예시 (너무 짧음):
+"1. GPT-5.5 vs Claude Mythos→LLM 경쟁 격화"  (아무 정보 없음)"""
 
     raw = _gemini_call_with_fallback(
         client, summary_prompt, "gemini-2.5-flash-lite", "gemini-2.5-flash"
@@ -202,18 +208,18 @@ def generate_news_markdown(korean_news_context: str) -> tuple[str, str]:
     except json.JSONDecodeError:
         parsed = {"headline": f"🤖 오늘의 AI 뉴스 ({DATE_STR})\n\n요약 생성 실패. 상세 보기 링크 참조.", "ai": "", "security": "", "devtools": ""}
 
-    # 각 메시지 검증 (Gemini가 초과하면 재시도 1회)
+    # 각 메시지 검증 - 200자 제한 엄수
     messages = []
     for key in ["headline", "ai", "security", "devtools"]:
         text = parsed.get(key, "").strip()
         if not text:
             continue
-        # 초과 시 마지막 줄 단위로 잘라내기 (잘림 표시 방지)
-        if len(text) > 195:
+        if len(text) > 200:
+            # 초과 시 마지막 줄부터 제거 (잘림 표시 방지)
             lines = text.split("\n")
-            while lines and len("\n".join(lines)) > 195:
+            while lines and len("\n".join(lines)) > 200:
                 lines.pop()
-            text = "\n".join(lines) if lines else text[:195]
+            text = "\n".join(lines) if lines else text[:200]
         messages.append(text)
 
     return markdown, messages
@@ -260,10 +266,9 @@ def send_kakao_message(messages: list, access_token: str) -> None:
             "object_type": "text",
             "text": text,
             "link": {"web_url": news_url, "mobile_web_url": news_url},
+            # 모든 메시지에 버튼 표시 (언제든 상세 보기 가능)
+            "button_title": "📰 전체 뉴스 읽기" if is_last else "자세히 보기",
         }
-        # 마지막 메시지에만 버튼
-        if is_last:
-            template["button_title"] = "전체 뉴스 읽기"
 
         data = urllib.parse.urlencode({"template_object": json.dumps(template)}).encode()
         req = urllib.request.Request(
