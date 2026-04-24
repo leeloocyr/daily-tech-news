@@ -260,13 +260,25 @@ def send_kakao_message(messages: list, access_token: str) -> None:
     repo_url = "https://github.com/leeloocyr/daily-tech-news"
     news_url = f"{repo_url}/blob/main/daily-tech-news/{DATE_STR}.md"
 
+    # 마지막 메시지에 URL 추가 (카카오가 자동으로 링크 처리)
+    if messages:
+        last_idx = len(messages) - 1
+        link_suffix = f"\n\n📰 상세보기\n{news_url}"
+        # 200자 제한 고려해서 길이 조정
+        available = 200 - len(link_suffix)
+        if len(messages[last_idx]) > available:
+            lines = messages[last_idx].split("\n")
+            while lines and len("\n".join(lines)) > available:
+                lines.pop()
+            messages[last_idx] = "\n".join(lines)
+        messages[last_idx] = messages[last_idx] + link_suffix
+
     for i, text in enumerate(messages):
         is_last = i == len(messages) - 1
         template = {
             "object_type": "text",
             "text": text,
             "link": {"web_url": news_url, "mobile_web_url": news_url},
-            # 모든 메시지에 버튼 표시 (언제든 상세 보기 가능)
             "button_title": "📰 전체 뉴스 읽기" if is_last else "자세히 보기",
         }
 
