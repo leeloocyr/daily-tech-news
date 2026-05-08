@@ -321,9 +321,14 @@ def main():
     print(f"[3/4] 파일 저장: {OUTPUT_PATH}")
     OUTPUT_PATH.write_text(markdown, encoding="utf-8")
 
-    print("[4/4] 카카오톡 전송...")
-    access_token = refresh_kakao_access_token()
-    send_kakao_message(summary, access_token)
+    if os.environ.get("DISABLE_KAKAO") == "1":
+        print("[4/4] 카카오톡 전송 스킵 (DISABLE_KAKAO=1)")
+    elif not os.environ.get("KAKAO_REST_API_KEY"):
+        print("[4/4] 카카오톡 전송 스킵 (KAKAO_REST_API_KEY 없음)")
+    else:
+        print("[4/4] 카카오톡 전송...")
+        access_token = refresh_kakao_access_token()
+        send_kakao_message(summary, access_token)
 
     print(f"[DONE] 뉴스 생성 완료")
 
