@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import re
+import subprocess
 from pathlib import Path
 
 import edge_tts
@@ -11,11 +12,40 @@ from markdown_it import MarkdownIt
 
 app = FastAPI()
 
+
+AUTO_PULL_INTERVAL_SEC = 1800  # 30분
+
+
+@app.on_event("startup")
+async def schedule_auto_pull():
+    async def auto_pull():
+        repo_root = Path(__file__).parent.parent
+        while True:
+            try:
+                await asyncio.sleep(AUTO_PULL_INTERVAL_SEC)
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "pull", "--ff-only"],
+                    cwd=repo_root,
+                    capture_output=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    out = result.stdout.decode(errors="replace").strip()
+                    if out and "up to date" not in out.lower():
+                        print(f"[auto-pull] updated: {out[:200]}")
+                else:
+                    print(f"[auto-pull] skip: {result.stderr.decode(errors='replace')[:200]}")
+            except Exception as e:
+                print(f"[auto-pull] error: {e}")
+    asyncio.create_task(auto_pull())
+
 AUDIO_DIR = Path(__file__).parent / "audio_cache"
 AUDIO_DIR.mkdir(exist_ok=True)
 TTS_VOICE = "ko-KR-InJoonNeural"
 
 NEWS_DIR = Path(__file__).parent.parent / "daily-tech-news"
+WEEKLY_NEWS_DIR = Path(__file__).parent.parent / "weekly-tech-news"
 EXPERIMENTS_DIR = Path(__file__).parent.parent / "experiments"
 WEEKLY_TESTS_DIR = Path(__file__).parent.parent / "weekly-tests"
 md = MarkdownIt()
@@ -77,6 +107,25 @@ def get_dates():
     files = sorted(NEWS_DIR.glob("*.md"), reverse=True)
     dates = [f.stem for f in files]
     return {"dates": dates}
+
+
+@app.get("/api/weeks")
+def get_weeks():
+    if not WEEKLY_NEWS_DIR.exists():
+        return {"weeks": []}
+    files = sorted(WEEKLY_NEWS_DIR.glob("*.md"), reverse=True)
+    weeks = [f.stem for f in files]
+    return {"weeks": weeks}
+
+
+@app.get("/api/weeks/{week_id}")
+def get_week(week_id: str):
+    file_path = WEEKLY_NEWS_DIR / f"{week_id}.md"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="해당 주간 종합이 없습니다")
+    content = file_path.read_text(encoding="utf-8")
+    html = md.render(content)
+    return {"html": html, "week_id": week_id, "markdown": content}
 
 
 @app.get("/api/news/{date}")
